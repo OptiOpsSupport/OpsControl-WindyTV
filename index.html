@@ -2,17 +2,109 @@
 <html>
 <head>
   <meta charset="utf-8">
-  <title>Windy Auto-Refresh</title>
-  <!-- Full page reload every 300 s (5 min) as a fallback -->
-  <meta http-equiv="refresh" content="300">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, shrink-to-fit=no">
+  <title>Windy Weekly Loop</title>
+  <!-- Safety net only: if the script ever stalls, the whole page reloads after 10 minutes.
+       Normal fresh-data reloads are handled by the script at the end of a loop. -->
+  <meta http-equiv="refresh" content="600">
+
+  <!-- Windy Map Forecast API needs Leaflet 1.4.0 exactly (and no Leaflet CSS) -->
+  <script src="https://unpkg.com/leaflet@1.4.0/dist/leaflet.js"></script>
+  <script src="https://api.windy.com/assets/map-forecast/libBoot.js"></script>
+
   <style>
     html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
-    iframe { border: 0; width: 100vw; height: 100vh; display: block; }
+    #windy { width: 100vw; height: 100vh; }
+    #clock {
+      position: absolute; top: 20px; left: 20px; z-index: 1000;
+      background: rgba(0,0,0,0.65); color: #fff;
+      font: 600 28px/1.2 Arial, sans-serif;
+      padding: 10px 18px; border-radius: 8px; pointer-events: none;
+    }
+    #clock small { display: block; font-size: 16px; font-weight: 400; opacity: 0.8; }
   </style>
 </head>
 <body>
-  <iframe id="windy"
-    src="https://embed.windy.com/embed.html?type=map&location=coordinates&metricRain=mm&metricTemp=%C2%B0C&metricWind=m%2Fs&zoom=5&overlay=wind&product=ecmwf&level=surface&lat=54.572&lon=-4.175&message=true">
-  </iframe>
+  <div id="windy"></div>
+  <div id="clock">Loading…<small>&nbsp;</small></div>
+
+  <script>
+    // ================== SETTINGS ==================
+    const API_KEY      = '2In9xY5J4UvaYl3N0ywVztSk76nnFwHm';
+    const LAT          = 54.572;
+    const LON          = -4.175;
+    const ZOOM         = 5;
+    const OVERLAY      = 'wind';   // free key allows: wind, temp, pressure
+    const WIND_UNITS   = 'm/s';
+    const DAYS         = 7;        // how far ahead to loop
+    const STEP_HOURS   = 3;        // forecast step between frames
+    const FRAME_PAUSE  = 700;      // ms to hold each frame after it has drawn
+    const END_PAUSE    = 3000;     // ms to hold the last frame before restarting
+    const RELOAD_AFTER = 5 * 60 * 1000; // reload for fresh data at end of a loop after 5 min
+    // ==============================================
+
+    const HOUR = 3600 * 1000;
+    const pageStart = Date.now();
+    const clockEl = document.getElementById('clock');
+
+    function startOfHour(t) { return Math.floor(t / HOUR) * HOUR; }
+
+    function showTime(ts) {
+      const d = new Date(ts);
+      const day  = d.toLocaleDateString('en-IE', { weekday: 'long', day: 'numeric', month: 'short' });
+      const time = d.toLocaleTimeString('en-IE', { hour: '2-digit', minute: '2-digit' });
+      const ahead = Math.round((ts - Date.now()) / HOUR);
+      clockEl.innerHTML = day + ' – ' + time +
+        '<small>' + (ahead <= 0 ? 'Now' : '+' + ahead + ' h forecast') + '</small>';
+    }
+
+    windyInit({
+      key: API_KEY,
+      lat: LAT,
+      lon: LON,
+      zoom: ZOOM,
+      overlay: OVERLAY,
+      product: 'gfs',            // the free testing key only has GFS
+      timestamp: Date.now(),
+    }, windyAPI => {
+      const { store, broadcast, overlays } = windyAPI;
+
+      try { overlays.wind.setMetric(WIND_UNITS); } catch (e) {}
+
+      const first = startOfHour(Date.now());
+      const last  = first + DAYS * 24 * HOUR;
+      let current = first;
+      let waiting = null;
+
+      // Advance to the next frame once Windy has finished drawing the current one
+      function next() {
+        clearTimeout(waiting);
+        waiting = null;          // ignore further redraw events until the next frame is set
+        const atEnd = current >= last;
+
+        setTimeout(() => {
+          if (atEnd) {
+            // Fresh data: reload the whole page once 5+ minutes have passed
+            if (Date.now() - pageStart > RELOAD_AFTER) { location.reload(); return; }
+            current = first;
+          } else {
+            current += STEP_HOURS * HOUR;
+          }
+          go(current);
+        }, atEnd ? END_PAUSE : FRAME_PAUSE);
+      }
+
+      function go(ts) {
+        showTime(ts);
+        store.set('timestamp', ts);
+        // Fallback: if Windy never reports "drawn" (slow TV/network), move on anyway
+        waiting = setTimeout(next, 5000);
+      }
+
+      broadcast.on('redrawFinished', () => { if (waiting) next(); });
+
+      go(current);
+    });
+  </script>
 </body>
 </html>
